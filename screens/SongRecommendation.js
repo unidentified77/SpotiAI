@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   StyleSheet, 
   Text, 
@@ -11,29 +11,147 @@ import {
   Linking,
   Alert
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { fetchSongRecommendations } from '../services/spotifyService';
+import { useAuth } from '../contexts/AuthContext';
+import { rateSong, getUserRating, removeRating, getRatingsForSongs } from '../services/songRatingService';
 
 export default function SongRecommendation({ route, navigation }) {
   const { genre } = route.params || { genre: 'Unknown' };
+  const { user } = useAuth();
   const [songs, setSongs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
-  useEffect(() => {
-    loadRecommendations();
-  }, [genre]);
+  const [ratings, setRatings] = useState({}); // { songId: 'like' | 'dislike' | null }
 
   const loadRecommendations = async () => {
     try {
       setLoading(true);
       setError(null);
-      const recommendations = await fetchSongRecommendations(genre, 20);
+      // Kullanıcı ID'sini geç - AI destekli öneri için
+      const userId = user?.uid || null;
+      const recommendations = await fetchSongRecommendations(genre, 20, userId);
       setSongs(recommendations);
     } catch (err) {
       console.error('Error loading recommendations:', err);
       setError('Şarkılar yüklenirken bir hata oluştu. Lütfen tekrar deneyin.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadUserRatings = useCallback(async () => {
+    if (!user || songs.length === 0) {
+      setRatings({});
+      return;
+    }
+    
+    try {
+      // Tüm şarkı ID'lerini topla
+      const songIds = songs.map(song => song.id).filter(Boolean);
+      
+      // Tek bir Firebase isteği ile tüm rating'leri getir
+      const ratingsMap = await getRatingsForSongs(user.uid, songIds);
+      
+      // Tüm map'i güncelle (yeni obje referansı ile React render'ı tetikler)
+      setRatings(ratingsMap);
+    } catch (err) {
+      console.error('Error loading user ratings:', err);
+    }
+  }, [user, songs]);
+
+  useEffect(() => {
+    loadRecommendations();
+  }, [genre]);
+
+  useEffect(() => {
+    if (user && songs.length > 0) {
+      loadUserRatings();
+    } else if (user && songs.length === 0) {
+      // Şarkı yoksa rating'leri temizle
+      setRatings({});
+    }
+  }, [user, songs, loadUserRatings]);
+
+  // Sayfa focus olduğunda rating'leri yenile (Rated sayfasından geri dönünce)
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!user || songs.length === 0) {
+        setRatings({});
+        return;
+      }
+      
+      let isActive = true;
+  
+      const load = async () => {
+        try {
+          // Tüm şarkı ID'lerini topla
+          const songIds = songs.map(song => song.id).filter(Boolean);
+          
+          // Tek bir Firebase isteği ile tüm rating'leri getir
+          const ratingsMap = await getRatingsForSongs(user.uid, songIds);
+          
+          if (isActive) {
+            setRatings(ratingsMap);
+          }
+        } catch (err) {
+          console.error('Error loading user ratings:', err);
+        }
+      };
+  
+      load();
+  
+      return () => {
+        isActive = false;
+      };
+    }, [user, songs])
+  );
+
+  const handleRateSong = async (song, rating) => {
+    if (!user) {
+      Alert.alert('Giriş Gerekli', 'Şarkıları beğenmek için lütfen giriş yapın.');
+      return;
+    }
+
+    // Mevcut rating'i kontrol et (state'ten al)
+    const previousRating = ratings[song.id];
+    
+    // Optimistic update - state'i hemen güncelle (yeni obje oluştur)
+    const newRatings = { ...ratings };
+    
+    if (previousRating === rating) {
+      // Aynı rating'e tekrar tıklanırsa, rating'i kaldır
+      delete newRatings[song.id];
+    } else {
+      // Yeni rating ekle veya güncelle
+      newRatings[song.id] = rating;
+    }
+    
+    // State'i hemen güncelle (yeni obje referansı ile React render'ı tetikler)
+    setRatings(newRatings);
+
+    try {
+      // Firebase'e kaydet
+      if (previousRating === rating) {
+        await removeRating(user.uid, song.id);
+      } else {
+        await rateSong(user.uid, song, rating);
+      }
+      // Başarılı olduğunda, state'i tekrar güncelle (Firebase'den doğrulama için)
+      // Bu opsiyonel ama tutarlılık için iyi
+    } catch (err) {
+      console.error('Error rating song:', err);
+      Alert.alert('Hata', 'Şarkı beğenilirken bir hata oluştu.');
+      // Hata durumunda state'i geri yükle (eski state'e dön)
+      setRatings(prevRatings => {
+        const rollbackRatings = { ...prevRatings };
+        if (previousRating) {
+          rollbackRatings[song.id] = previousRating;
+        } else {
+          delete rollbackRatings[song.id];
+        }
+        return rollbackRatings;
+      });
     }
   };
 
@@ -90,11 +208,9 @@ export default function SongRecommendation({ route, navigation }) {
         {!loading && !error && songs.length > 0 && (
           <View style={styles.songsList}>
             {songs.map((song, index) => (
-              <TouchableOpacity
+              <View
                 key={song.id}
                 style={styles.songCard}
-                onPress={() => openSpotify(song.externalUrl)}
-                activeOpacity={0.7}
               >
                 {song.albumImage && (
                   <Image 
@@ -117,14 +233,42 @@ export default function SongRecommendation({ route, navigation }) {
                       {formatDuration(song.duration)}
                     </Text>
                     <Text style={styles.songPopularity}>
-                      ⭐ {song.popularity}
+                      Popularity: {song.popularity}
                     </Text>
                   </View>
                 </View>
-                <View style={styles.playButton}>
-                  <Text style={styles.playButtonText}>▶</Text>
+                <View style={styles.actionButtons}>
+                  <TouchableOpacity
+                    style={[
+                      styles.rateButton,
+                      styles.likeButton,
+                      (ratings[song.id] === 'like') ? styles.rateButtonActive : null
+                    ]}
+                    onPress={() => handleRateSong(song, 'like')}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.rateButtonText}>👍</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.rateButton,
+                      styles.dislikeButton,
+                      (ratings[song.id] === 'dislike') ? styles.rateButtonActive : null
+                    ]}
+                    onPress={() => handleRateSong(song, 'dislike')}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.rateButtonText}>👎</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.playButton}
+                    onPress={() => openSpotify(song.externalUrl)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.playButtonText}>▶</Text>
+                  </TouchableOpacity>
                 </View>
-              </TouchableOpacity>
+              </View>
             ))}
           </View>
         )}
@@ -266,6 +410,34 @@ const styles = StyleSheet.create({
   songPopularity: {
     fontSize: 12,
     color: '#1DB954',
+  },
+  actionButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  rateButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#282828',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#404040',
+  },
+  likeButton: {
+    // Like button özel stil
+  },
+  dislikeButton: {
+    // Dislike button özel stil
+  },
+  rateButtonActive: {
+    backgroundColor: '#1DB954',
+    borderColor: '#1DB954',
+  },
+  rateButtonText: {
+    fontSize: 16,
   },
   playButton: {
     width: 40,

@@ -1,9 +1,17 @@
-import { getRecommendationsByGenre } from '../config/spotify';
+import { getRecommendationsByGenre, getPersonalizedRecommendations } from '../config/spotify';
+import { getUserRatings } from './songRatingService';
 
-// Genre'a göre şarkı önerileri çek (daha temiz API)
-export const fetchSongRecommendations = async (genre, limit = 20) => {
+// Kullanıcı giriş yapmışsa, beğenilerine göre AI ile kişiselleştirilmiş öneriler verir
+export const fetchSongRecommendations = async (genre, limit = 20, userId = null) => {
   try {
-    const tracks = await getRecommendationsByGenre(genre, limit);
+    let tracks = [];
+    
+    if (tracks.length === 0) {
+      tracks = await getRecommendationsByGenre(genre, limit);
+    } else {
+      // Kullanıcı giriş yapmamışsa, genre'a göre arama yap
+      tracks = await getRecommendationsByGenre(genre, limit);
+    }
     
     // Track'leri daha kullanışlı formata çevir
     return tracks.map(track => ({

@@ -173,3 +173,98 @@ export const getRecommendationsByGenre = async (genre, limit = 20) => {
   }
 };
 
+// Spotify Recommendation API kullanarak kişiselleştirilmiş öneriler
+// seed_tracks: kullanıcının beğendiği şarkıların ID'leri (max 5)
+// seed_genres: genre'lar (max 5)
+export const getPersonalizedRecommendations = async (seedTracks = [], seedGenres = [], limit = 20) => {
+  try {
+    const accessToken = await getSpotifyAccessToken();
+    
+    // Spotify API parametreleri
+    const params = new URLSearchParams();
+    
+    // Spotify API gereksinimleri:
+    // - En az 1 seed parametresi olmalı
+    // - Toplam seed sayısı (tracks + artists + genres) 5'i geçmemeli
+    // - seed_tracks + seed_artists + seed_genres toplamı 5 olmalı
+    
+    let totalSeeds = 0;
+    const maxSeeds = 5;
+    
+    // Seed tracks (kullanıcının beğendiği şarkılar) - max 5
+    if (seedTracks.length > 0) {
+      // Geçerli track ID'lerini filtrele (boş veya geçersiz olanları çıkar)
+      const validTracks = seedTracks
+        .filter(trackId => trackId && trackId.trim().length > 0)
+        .slice(0, maxSeeds);
+      
+      if (validTracks.length > 0) {
+        const tracksToUse = validTracks.join(',');
+        params.append('seed_tracks', tracksToUse);
+        totalSeeds += validTracks.length;
+      }
+    }
+    
+    // Seed genres - kalan slot sayısına göre ekle
+    if (seedGenres.length > 0 && totalSeeds < maxSeeds) {
+      const remainingSlots = maxSeeds - totalSeeds;
+      const genresToUse = seedGenres.slice(0, remainingSlots).join(',');
+      params.append('seed_genres', genresToUse);
+      totalSeeds += seedGenres.slice(0, remainingSlots).length;
+    } else if (totalSeeds === 0) {
+      // Eğer hiç seed yoksa, en azından genre kullan
+      params.append('seed_genres', seedGenres.length > 0 ? seedGenres[0] : 'pop');
+      totalSeeds = 1;
+    }
+    
+    // En az 1 seed olmalı
+    if (totalSeeds === 0) {
+      throw new Error('At least one seed parameter is required');
+    }
+    
+    params.append('limit', limit.toString());
+    params.append('market', 'US');
+    
+    const url = `${SPOTIFY_API_BASE}/recommendations?${params.toString()}`;
+    console.log('Spotify Recommendation API URL:', url);
+    
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+    
+    if (!response.ok) {
+      let errorText = '';
+      try {
+        errorText = await response.text();
+        const errorJson = JSON.parse(errorText);
+        console.error('Spotify recommendations error:', response.status, JSON.stringify(errorJson, null, 2));
+      } catch (e) {
+        console.error('Spotify recommendations error:', response.status, errorText);
+      }
+      
+      // 401 hatası - yetki sorunu (Client Credentials Flow recommendations için yeterli olmayabilir)
+      if (response.status === 401) {
+        throw new Error('Authentication failed. Recommendations API may require user authorization.');
+      }
+      
+      // 404 hatası - endpoint bulunamadı veya geçersiz parametreler
+      if (response.status === 404) {
+        // Spotify Recommendation API Client Credentials Flow ile çalışmayabilir
+        // Bu durumda fallback'e dön
+        console.warn('Recommendations API returned 404. This may be due to Client Credentials Flow limitations.');
+        throw new Error('Recommendations API not available with current authentication');
+      }
+      
+      throw new Error(`Failed to get personalized recommendations: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    return data.tracks || [];
+  } catch (error) {
+    console.error('Error getting personalized recommendations:', error);
+    throw error;
+  }
+};
+

@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Home from './screens/Home';
 import Explore from './screens/Explore';
 import Profile from './screens/Profile';
+import Rated from './screens/Rated';
 import SongRecommendation from './screens/SongRecommendation';
 import SignIn from './screens/SignIn';
 import SignUp from './screens/SignUp';
@@ -58,6 +59,7 @@ function AuthenticatedNavigator() {
     >
       <Tab.Screen name="Home" component={HomeStack} />
       <Tab.Screen name="Explore" component={Explore} />
+      <Tab.Screen name="Rated" component={Rated} />
       <Tab.Screen name="Profile" component={Profile} />
     </Tab.Navigator>
   );
